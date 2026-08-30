@@ -6,6 +6,7 @@
 #include "wifi_manager.h"
 #include "mqtt_manager.h"
 #include "local_config.h"
+#include "command_bridge.h"
 
 #define UART_PORT       UART_NUM_2
 #define UART_RX_PIN     16
@@ -32,12 +33,13 @@ static uint8_t crc8(const uint8_t *data, uint16_t length)
 
     return crc;
 }
+static void mqtt_command_handler(const char *command)
+{
+    CommandBridge_HandleMqttCommand(command);
+}
 void app_main(void)
 {
-    
-    
-    
-
+MQTTManager_SetCommandCallback(mqtt_command_handler);
 WiFiManager_Init(wifi_name, wifi_password);
 
 while (!WiFiManager_IsConnected())
@@ -45,7 +47,7 @@ while (!WiFiManager_IsConnected())
     vTaskDelay(pdMS_TO_TICKS(200));
 }
 
-MQTTManager_Init("mqtt://192.168.1.103:1883");
+MQTTManager_Init("mqtt://192.168.1.101:1883");
 
     uart_config_t uart_config = {
         .baud_rate = UART_BAUDRATE,
@@ -55,7 +57,13 @@ MQTTManager_Init("mqtt://192.168.1.103:1883");
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-
+ESP_ERROR_CHECK(uart_set_pin(
+    UART_PORT,
+    17,
+    UART_RX_PIN,
+    UART_PIN_NO_CHANGE,
+    UART_PIN_NO_CHANGE
+));
 ESP_ERROR_CHECK(
     uart_driver_install(UART_PORT, BUFFER_SIZE, 0, 0, NULL, 0)
 );

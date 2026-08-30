@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef void (*MQTTCommandCallback_t)(const char *command);
+
+void MQTTManager_SetCommandCallback(MQTTCommandCallback_t callback);
 void MQTTManager_Init(const char *broker_uri);
 
 bool MQTTManager_IsConnected(void);
