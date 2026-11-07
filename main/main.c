@@ -1,140 +1,110 @@
-#include <stdio.h>
+/*
+ * ESP32 gateway between the STM32 motor controller (UART) and an MQTT broker.
+ *
+ *   STM32 --UART telemetry--> ESP32 --MQTT DEVICE_ID/telemetry--> broker
+ *   STM32 <--UART commands--- ESP32 <--MQTT DEVICE_ID/command---- broker
+ *
+ * Settings (Wi-Fi, broker, pins) are in `idf.py menuconfig` ->
+ * "Motor gateway configuration". They are stored in sdkconfig, which is not
+ * committed.
+ */
+#include "command_parser.h"
+#include "mqtt_manager.h"
+#include "protocol.h"
+#include "uart_link.h"
+#include "wifi_manager.h"
+
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/uart.h"
-#include "esp_log.h"
-#include "wifi_manager.h"
-#include "mqtt_manager.h"
-#include "local_config.h"
-#include "command_bridge.h"
+#include "sdkconfig.h"
 
-#define UART_PORT       UART_NUM_2
-#define UART_RX_PIN     16
-#define UART_BAUDRATE   115200
-#define BUFFER_SIZE     1024
+#define WIFI_WAIT_LOG_PERIOD_MS 10000U
+#define HEARTBEAT_TASK_STACK    2048
+#define HEARTBEAT_TASK_PRIORITY 5
 
-static const char *TAG = "STM32_UART";  
-static uint8_t crc8(const uint8_t *data, uint16_t length)
+static const char *TAG = "GATEWAY";
+
+static void on_telemetry(const ProtocolTelemetry_t *telemetry, uint8_t seq)
 {
-    uint8_t crc = 0x00;
+    const UartLinkStats_t stats = UartLink_GetStats();
 
-    for (uint16_t i = 0; i < length; i++)
+    MQTTManager_PublishTelemetry(telemetry, seq, stats.lost_frames);
+
+    ESP_LOGD(TAG, "seq=%u state=%u duty=%u/%u flags=0x%02x adc=%u", seq, telemetry->state,
+             telemetry->current_duty, telemetry->target_duty, telemetry->flags, telemetry->adc_raw);
+}
+
+static void on_mqtt_command(const char *text)
+{
+    ProtocolCommand_t command;
+    uint8_t value;
+
+    if (!CommandParser_Parse(text, &command, &value))
     {
-        crc ^= data[i];
-
-        for (uint8_t bit = 0; bit < 8; bit++)
-        {
-            if (crc & 0x80)
-                crc = (crc << 1) ^ 0x07;
-            else
-                crc <<= 1;
-        }
+        ESP_LOGW(TAG, "Unknown command '%s' (expected START, STOP or DUTY <0-100>)", text);
+        return;
     }
 
-    return crc;
+    const esp_err_t result = UartLink_SendCommand(command, value);
+
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to forward command: %s", esp_err_to_name(result));
+    }
 }
-static void mqtt_command_handler(const char *command)
+
+/* The STM32 stops a remotely started motor if it hears nothing for 2 s.
+ * Heartbeats are only sent while the broker connection is up, so losing the
+ * remote side (Wi-Fi, broker, or this ESP32) stops the motor. */
+static void heartbeat_task(void *argument)
 {
-    CommandBridge_HandleMqttCommand(command);
+    (void)argument;
+
+    const TickType_t period = pdMS_TO_TICKS(CONFIG_GATEWAY_HEARTBEAT_PERIOD_MS);
+
+    for (;;)
+    {
+        if (MQTTManager_IsConnected())
+        {
+            (void)UartLink_SendCommand(PROTOCOL_CMD_HEARTBEAT, 0U);
+        }
+
+        vTaskDelay(period);
+    }
 }
+
 void app_main(void)
 {
-MQTTManager_SetCommandCallback(mqtt_command_handler);
-WiFiManager_Init(wifi_name, wifi_password);
-
-while (!WiFiManager_IsConnected())
-{
-    vTaskDelay(pdMS_TO_TICKS(200));
-}
-
-MQTTManager_Init("mqtt://192.168.1.101:1883");
-
-    uart_config_t uart_config = {
-        .baud_rate = UART_BAUDRATE,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
+    const UartLinkConfig_t uart_config = {
+        .port = CONFIG_GATEWAY_UART_PORT,
+        .tx_pin = CONFIG_GATEWAY_UART_TX_PIN,
+        .rx_pin = CONFIG_GATEWAY_UART_RX_PIN,
+        .baudrate = CONFIG_GATEWAY_UART_BAUDRATE,
     };
-ESP_ERROR_CHECK(uart_set_pin(
-    UART_PORT,
-    17,
-    UART_RX_PIN,
-    UART_PIN_NO_CHANGE,
-    UART_PIN_NO_CHANGE
-));
-ESP_ERROR_CHECK(
-    uart_driver_install(UART_PORT, BUFFER_SIZE, 0, 0, NULL, 0)
-);
 
-ESP_ERROR_CHECK(
-    uart_param_config(UART_PORT, &uart_config)
-);
+    /* The UART starts first so telemetry is logged even without Wi-Fi. */
+    ESP_ERROR_CHECK(UartLink_Init(&uart_config, on_telemetry));
 
-ESP_ERROR_CHECK(
-    uart_set_pin(
-        UART_PORT,
-        UART_PIN_NO_CHANGE,
-        UART_RX_PIN,
-        UART_PIN_NO_CHANGE,
-        UART_PIN_NO_CHANGE
-    )
-);
+    WiFiManager_Init(CONFIG_GATEWAY_WIFI_SSID, CONFIG_GATEWAY_WIFI_PASSWORD);
 
-    uint8_t data[BUFFER_SIZE];
-
-    while (1)
+    while (!WiFiManager_WaitConnected(WIFI_WAIT_LOG_PERIOD_MS))
     {
-        int len = uart_read_bytes(
-            UART_PORT,
-            data,
-            BUFFER_SIZE,
-            pdMS_TO_TICKS(100)
-        );
-
-if (len == 14)
-{
-    if ((data[0] == 0xAA) && (data[1] == 0x55))
-    {
-        uint8_t calculated_crc = crc8(&data[2], 11);
-
-        if (calculated_crc != data[13])
-        {
-            ESP_LOGE(TAG, "CRC ERROR");
-            continue;
-        }
-
-        uint8_t sequence     = data[5];
-        uint8_t state        = data[6];
-        uint8_t command_duty = data[7];
-        uint8_t target_duty  = data[8];
-        uint8_t current_duty = data[9];
-        uint8_t estop        = data[10];
-
-        uint16_t adc_raw =
-            ((uint16_t)data[12] << 8) | data[11];
-
-            MQTTManager_PublishTelemetry(
-    state,
-    command_duty,
-    target_duty,
-    current_duty,
-    estop,
-    adc_raw
-);
-
-        ESP_LOGI(TAG,
-                 "SEQ:%u STATE:%u CMD:%u TARGET:%u CURRENT:%u ESTOP:%u ADC:%u",
-                 sequence,
-                 state,
-                 command_duty,
-                 target_duty,
-                 current_duty,
-                 estop,
-                 adc_raw);
+        ESP_LOGW(TAG, "Still waiting for Wi-Fi '%s'...", CONFIG_GATEWAY_WIFI_SSID);
     }
-}
 
+    const MQTTManagerConfig_t mqtt_config = {
+        .broker_uri = CONFIG_GATEWAY_MQTT_BROKER_URI,
+        .username = CONFIG_GATEWAY_MQTT_USERNAME,
+        .password = CONFIG_GATEWAY_MQTT_PASSWORD,
+        .device_id = CONFIG_GATEWAY_DEVICE_ID,
+    };
+
+    MQTTManager_Init(&mqtt_config, on_mqtt_command);
+
+    if (xTaskCreate(heartbeat_task, "heartbeat", HEARTBEAT_TASK_STACK, NULL,
+                    HEARTBEAT_TASK_PRIORITY, NULL) != pdPASS)
+    {
+        ESP_LOGE(TAG, "Could not start the heartbeat task");
     }
 }
