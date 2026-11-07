@@ -1,0 +1,59 @@
+menu "Motor gateway configuration"
+
+    config GATEWAY_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "myssid"
+
+    config GATEWAY_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default "mypassword"
+
+    config GATEWAY_MQTT_BROKER_URI
+        string "MQTT broker URI"
+        default "mqtt://192.168.1.101:1883"
+        help
+            mqtt://host:1883 for plain TCP, mqtts://host:8883 for TLS.
+
+    config GATEWAY_MQTT_USERNAME
+        string "MQTT username"
+        default ""
+        help
+            Leave empty to connect without authentication (not recommended:
+            anyone on the network can then start the motor).
+
+    config GATEWAY_MQTT_PASSWORD
+        string "MQTT password"
+        default ""
+
+    config GATEWAY_DEVICE_ID
+        string "Device ID (MQTT topic prefix)"
+        default "motor01"
+        help
+            Topics: <id>/telemetry, <id>/command, <id>/status.
+
+    config GATEWAY_UART_PORT
+        int "UART port connected to the STM32"
+        range 0 2
+        default 2
+
+    config GATEWAY_UART_TX_PIN
+        int "UART TX GPIO (to STM32 PA10 / RX)"
+        default 17
+
+    config GATEWAY_UART_RX_PIN
+        int "UART RX GPIO (from STM32 PA9 / TX)"
+        default 16
+
+    config GATEWAY_UART_BAUDRATE
+        int "UART baud rate"
+        default 115200
+
+    config GATEWAY_HEARTBEAT_PERIOD_MS
+        int "Heartbeat period to the STM32 (ms)"
+        range 100 1500
+        default 500
+        help
+            The STM32 stops a remotely started motor after 2000 ms without a
+            valid frame, so keep this well below 2000 ms.
+
+endmenu

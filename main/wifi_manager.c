@@ -16,9 +16,7 @@
 static const char *TAG = "WIFI";
 static EventGroupHandle_t s_wifi_event_group;
 
-static void wifi_event_handler(void *arg,
-                               esp_event_base_t event_base,
-                               int32_t event_id,
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
                                void *event_data)
 {
     if ((event_base == WIFI_EVENT) && (event_id == WIFI_EVENT_STA_START))
@@ -45,8 +43,7 @@ void WiFiManager_Init(const char *ssid, const char *password)
 {
     esp_err_t ret = nvs_flash_init();
 
-    if ((ret == ESP_ERR_NVS_NO_FREE_PAGES) ||
-        (ret == ESP_ERR_NVS_NEW_VERSION_FOUND))
+    if ((ret == ESP_ERR_NVS_NO_FREE_PAGES) || (ret == ESP_ERR_NVS_NEW_VERSION_FOUND))
     {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
@@ -63,28 +60,16 @@ void WiFiManager_Init(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
     ESP_ERROR_CHECK(
-        esp_event_handler_register(WIFI_EVENT,
-                                   ESP_EVENT_ANY_ID,
-                                   &wifi_event_handler,
-                                   NULL)
-    );
+        esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
 
     ESP_ERROR_CHECK(
-        esp_event_handler_register(IP_EVENT,
-                                   IP_EVENT_STA_GOT_IP,
-                                   &wifi_event_handler,
-                                   NULL)
-    );
+        esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
 
     wifi_config_t wifi_config = {0};
 
-    strncpy((char *)wifi_config.sta.ssid,
-            ssid,
-            sizeof(wifi_config.sta.ssid) - 1U);
+    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1U);
 
-    strncpy((char *)wifi_config.sta.password,
-            password,
-            sizeof(wifi_config.sta.password) - 1U);
+    strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1U);
 
     wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
@@ -101,6 +86,19 @@ bool WiFiManager_IsConnected(void)
     }
 
     EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
+
+    return (bits & WIFI_CONNECTED_BIT) != 0U;
+}
+
+bool WiFiManager_WaitConnected(uint32_t timeout_ms)
+{
+    if (s_wifi_event_group == NULL)
+    {
+        return false;
+    }
+
+    const EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE,
+                                                 pdTRUE, pdMS_TO_TICKS(timeout_ms));
 
     return (bits & WIFI_CONNECTED_BIT) != 0U;
 }
